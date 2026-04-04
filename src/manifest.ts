@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.plugin-file-viewer",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.2.1",
   displayName: "File Viewer",
   description:
     "Browse and review files linked to Paperclip issues. Manage a review queue, approve or reject files, and keep a full review history — all from within Paperclip.",
@@ -13,6 +13,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "ui.page.register",
+    "ui.sidebar.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -51,6 +52,12 @@ const manifest: PaperclipPluginManifestV1 = {
         displayName: "File Viewer",
         routePath: "file-viewer",
         exportName: "FileViewerPage",
+      },
+      {
+        type: "sidebar",
+        id: "file-viewer-sidebar",
+        displayName: "File Viewer",
+        exportName: "FileViewerSidebar",
       },
     ],
   },

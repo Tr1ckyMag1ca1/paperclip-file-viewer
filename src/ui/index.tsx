@@ -3,7 +3,36 @@ import {
   usePluginData,
   usePluginAction,
   type PluginPageProps,
+  type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
+
+// ── Sidebar nav link ───────────────────────────────────────────────────────
+
+export function FileViewerSidebar({ context }: PluginSidebarProps) {
+  const href = `/${context.companyPrefix}/file-viewer`;
+  const isActive = typeof window !== "undefined" && window.location.pathname === href;
+  return (
+    <a
+      href={href}
+      aria-current={isActive ? "page" : undefined}
+      className={[
+        "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
+        isActive
+          ? "bg-accent text-foreground"
+          : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+      ].join(" ")}
+    >
+      <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="16" y1="13" x2="8" y2="13" />
+        <line x1="16" y1="17" x2="8" y2="17" />
+        <line x1="10" y1="9" x2="8" y2="9" />
+      </svg>
+      <span>File Viewer</span>
+    </a>
+  );
+}
 
 // ── Types (matches the running file-viewer server API) ─────────────────────
 
