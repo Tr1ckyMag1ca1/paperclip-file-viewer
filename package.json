@@ -1,11 +1,21 @@
 {
   "name": "paperclip-file-viewer",
-  "version": "0.1.0",
-  "description": "A Paperclip plugin for browsing and reviewing files linked to issues — built entirely by AI agents",
+  "version": "0.2.0",
   "type": "module",
   "private": false,
-  "exports": {
-    ".": "./src/index.ts"
+  "description": "A Paperclip plugin for browsing and reviewing files linked to issues. Manage a review queue, approve or reject files, and keep a full review history — all from within Paperclip.",
+  "keywords": [
+    "paperclip",
+    "plugin",
+    "file-viewer",
+    "review",
+    "code-review"
+  ],
+  "author": "Paperclip AI Agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tr1ckyMag1ca1/paperclip-file-viewer.git"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -13,20 +23,22 @@
     "ui": "./dist/ui/"
   },
   "scripts": {
-    "build": "tsc && node ./scripts/build-ui.mjs",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
-  "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*"
-  },
+  "files": [
+    "dist/",
+    "package.json",
+    "README.md"
+  ],
   "devDependencies": {
+    "@paperclipai/plugin-sdk": "^2026.403.0",
+    "@paperclipai/shared": "^0.3.0",
     "@types/node": "^24.6.0",
     "@types/react": "^19.0.8",
-    "@types/react-dom": "^19.0.3",
     "esbuild": "^0.27.3",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "typescript": "^5.7.3"
   },
   "peerDependencies": {

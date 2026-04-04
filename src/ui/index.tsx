@@ -1,226 +1,269 @@
-import React, { useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import {
   usePluginData,
   usePluginAction,
-  type PluginDetailTabProps,
+  type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 
-// ---------------------------------------------------------------------------
-// Types mirrored from worker
-// ---------------------------------------------------------------------------
+// ── Types (matches the running file-viewer server API) ─────────────────────
 
-interface RegisteredFile {
+type FileRecord = {
   id: string;
+  name: string;
   path: string;
-  issueId: string;
-  addedAt: string;
-  addedBy: string;
-  reviewStatus: "pending" | "approved" | "rejected";
-  reviewedAt?: string;
-  reviewedBy?: string;
-  reviewNote?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-const styles = {
-  container: {
-    padding: "16px",
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    fontSize: "14px",
-    color: "#e4e4e7",
-  } as React.CSSProperties,
-  heading: {
-    fontSize: "16px",
-    fontWeight: 600,
-    marginBottom: "12px",
-    color: "#fafafa",
-  } as React.CSSProperties,
-  fileList: {
-    listStyle: "none",
-    padding: 0,
-    margin: 0,
-  } as React.CSSProperties,
-  fileItem: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "8px 12px",
-    marginBottom: "4px",
-    borderRadius: "6px",
-    backgroundColor: "#27272a",
-    border: "1px solid #3f3f46",
-  } as React.CSSProperties,
-  filePath: {
-    fontFamily: '"JetBrains Mono", monospace',
-    fontSize: "13px",
-    color: "#a1a1aa",
-    overflow: "hidden" as const,
-    textOverflow: "ellipsis" as const,
-    whiteSpace: "nowrap" as const,
-    flex: 1,
-    marginRight: "12px",
-  } as React.CSSProperties,
-  badge: (status: string): React.CSSProperties => ({
-    display: "inline-block",
-    padding: "2px 8px",
-    borderRadius: "9999px",
-    fontSize: "11px",
-    fontWeight: 500,
-    textTransform: "uppercase",
-    letterSpacing: "0.04em",
-    backgroundColor:
-      status === "approved"
-        ? "#14532d"
-        : status === "rejected"
-          ? "#7f1d1d"
-          : "#44403c",
-    color:
-      status === "approved"
-        ? "#4ade80"
-        : status === "rejected"
-          ? "#fca5a5"
-          : "#d6d3d1",
-  }),
-  emptyState: {
-    textAlign: "center" as const,
-    padding: "32px 16px",
-    color: "#71717a",
-  } as React.CSSProperties,
-  addForm: {
-    display: "flex",
-    gap: "8px",
-    marginBottom: "16px",
-  } as React.CSSProperties,
-  input: {
-    flex: 1,
-    padding: "6px 10px",
-    borderRadius: "6px",
-    border: "1px solid #3f3f46",
-    backgroundColor: "#18181b",
-    color: "#e4e4e7",
-    fontSize: "13px",
-    fontFamily: '"JetBrains Mono", monospace',
-    outline: "none",
-  } as React.CSSProperties,
-  button: {
-    padding: "6px 14px",
-    borderRadius: "6px",
-    border: "none",
-    backgroundColor: "#7c3aed",
-    color: "#fff",
-    fontSize: "13px",
-    fontWeight: 500,
-    cursor: "pointer",
-  } as React.CSSProperties,
-  buttonSmall: {
-    padding: "2px 8px",
-    borderRadius: "4px",
-    border: "1px solid #3f3f46",
-    backgroundColor: "transparent",
-    color: "#a1a1aa",
-    fontSize: "11px",
-    cursor: "pointer",
-    marginLeft: "4px",
-  } as React.CSSProperties,
+  file_type: "text" | "image";
+  content: string | null;
+  linked_issue_id: string | null;
+  linked_task_id: string | null;
+  review_status: "pending" | "approved" | "changes_requested" | "rejected";
+  flagged_for_review: number;
+  creating_agent_id: string | null;
+  created_at: string;
+  updated_at: string;
+  reviews?: ReviewRecord[];
 };
 
-// ---------------------------------------------------------------------------
-// FilesTab — the main exported component
-// ---------------------------------------------------------------------------
+type ReviewRecord = {
+  id: string;
+  action: string;
+  note: string | null;
+  created_at: string;
+};
 
-export function FilesTab({ entityId }: PluginDetailTabProps) {
-  const issueId = entityId;
-  const [newPath, setNewPath] = useState("");
+type FilesData = { files: FileRecord[]; total: number };
 
-  const {
-    data,
-    loading,
-    error,
-    refetch,
-  } = usePluginData<{ files: RegisteredFile[] }>("files", { issueId });
+// ── Styles ─────────────────────────────────────────────────────────────────
 
-  const registerFile = usePluginAction("register-file");
+const s: Record<string, React.CSSProperties> = {
+  root:        { display: "flex", flexDirection: "column", height: "100%", fontFamily: "inherit", fontSize: 14 },
+  topbar:      { display: "flex", alignItems: "center", gap: 12, padding: "0 16px", height: 48, borderBottom: "1px solid var(--border, #e2e8f0)", flexShrink: 0 },
+  title:       { fontWeight: 700, fontSize: 15 },
+  tabs:        { display: "flex", gap: 4, marginLeft: "auto" },
+  tab:         { background: "none", border: "none", cursor: "pointer", padding: "4px 12px", borderRadius: 6, fontSize: 13, color: "var(--muted-foreground, #64748b)" },
+  tabActive:   { background: "var(--accent, #f1f5f9)", color: "var(--foreground, #0f172a)", fontWeight: 600 },
+  body:        { display: "flex", flex: 1, overflow: "hidden" },
+  sidebar:     { width: 300, flexShrink: 0, borderRight: "1px solid var(--border, #e2e8f0)", display: "flex", flexDirection: "column", overflow: "hidden" },
+  sHead:       { padding: "10px 12px", borderBottom: "1px solid var(--border, #e2e8f0)" },
+  search:      { width: "100%", padding: "6px 10px", border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, fontSize: 13, background: "transparent", color: "inherit", boxSizing: "border-box" as const },
+  list:        { flex: 1, overflowY: "auto" as const },
+  item:        { padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid var(--border, #e2e8f0)", display: "flex", flexDirection: "column", gap: 2 },
+  itemSel:     { background: "var(--accent, #f1f5f9)" },
+  iName:       { fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
+  iPath:       { fontSize: 11, color: "var(--muted-foreground, #64748b)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
+  iMeta:       { display: "flex", gap: 4, flexWrap: "wrap" as const, alignItems: "center" },
+  content:     { flex: 1, overflow: "auto", display: "flex", flexDirection: "column" },
+  placeholder: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted-foreground, #64748b)", fontSize: 13 },
+  fileView:    { display: "flex", flex: 1, overflow: "hidden" },
+  fileBody:    { flex: 1, overflow: "auto", padding: 20 },
+  fileSide:    { width: 260, flexShrink: 0, borderLeft: "1px solid var(--border, #e2e8f0)", padding: 16, overflowY: "auto" as const, display: "flex", flexDirection: "column", gap: 10 },
+  pre:         { background: "var(--muted, #f8fafc)", border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, padding: 16, fontSize: 12, overflowX: "auto" as const, whiteSpace: "pre-wrap" as const, wordBreak: "break-all" as const, lineHeight: 1.6 },
+  mLabel:      { fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.5px", color: "var(--muted-foreground, #64748b)", marginBottom: 2 },
+  mValue:      { fontSize: 13 },
+  btn:         { padding: "7px 12px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600, width: "100%" },
+  divider:     { border: "none", borderTop: "1px solid var(--border, #e2e8f0)", margin: "4px 0" },
+  empty:       { padding: "32px 12px", textAlign: "center" as const, color: "var(--muted-foreground, #64748b)", fontSize: 13 },
+};
 
-  const handleAdd = useCallback(async () => {
-    const trimmed = newPath.trim();
-    if (!trimmed) return;
-    try {
-      await registerFile({ path: trimmed, issueId, addedBy: "ui-user" });
-      setNewPath("");
-      refetch();
-    } catch (err) {
-      console.error("Failed to register file:", err);
-    }
-  }, [newPath, issueId, registerFile, refetch]);
+const STATUS_STYLE: Record<string, { bg: string; color: string }> = {
+  pending:           { bg: "#fef9c3", color: "#854d0e" },
+  approved:          { bg: "#dcfce7", color: "#166534" },
+  changes_requested: { bg: "#ffedd5", color: "#9a3412" },
+  rejected:          { bg: "#fee2e2", color: "#991b1b" },
+};
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") handleAdd();
-    },
-    [handleAdd],
+function Badge({ label, bg, color }: { label: string; bg: string; color: string }) {
+  return <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 4, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", background: bg, color }}>{label}</span>;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const st = STATUS_STYLE[status] ?? { bg: "#f1f5f9", color: "#475569" };
+  return <Badge label={status.replace("_", " ")} bg={st.bg} color={st.color} />;
+}
+
+function FileItem({ file, selected, onClick }: { file: FileRecord; selected: boolean; onClick: () => void }) {
+  return (
+    <div style={{ ...s.item, ...(selected ? s.itemSel : {}) }} onClick={onClick}>
+      <div style={s.iName}>{file.name}</div>
+      <div style={s.iPath}>{file.path}</div>
+      <div style={s.iMeta}>
+        <StatusBadge status={file.review_status} />
+        {file.flagged_for_review ? <Badge label="Flagged" bg="#ede9fe" color="#5b21b6" /> : null}
+        {file.linked_issue_id ? <span style={{ fontSize: 11, color: "var(--muted-foreground, #64748b)" }}>{file.linked_issue_id}</span> : null}
+      </div>
+    </div>
   );
+}
 
-  if (loading) {
-    return (
-      <div style={styles.container}>
-        <div style={styles.emptyState}>Loading files...</div>
-      </div>
-    );
+export function FileViewerPage(_props: PluginPageProps) {
+  const [tab, setTab]               = useState<"queue" | "all">("queue");
+  const [search, setSearch]         = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pending, setPending]       = useState<string | null>(null);
+  const [note, setNote]             = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [toast, setToast]           = useState<{ msg: string; ok: boolean } | null>(null);
+
+  const listParams = tab === "queue" ? { flagged: true, q: search } : { q: search };
+
+  const { data: filesData, loading: listLoading, error: listError, refresh: refreshList } =
+    usePluginData<FilesData>("files", listParams);
+
+  const { data: file, loading: fileLoading, refresh: refreshFile } =
+    usePluginData<FileRecord>("file", selectedId ? { id: selectedId } : undefined);
+
+  const reviewAction = usePluginAction("review");
+
+  const files = filesData?.files ?? [];
+
+  const showToast = useCallback((msg: string, ok: boolean) => {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  async function submitReview() {
+    if (!selectedId || !pending) return;
+    setSubmitting(true);
+    try {
+      await reviewAction({ id: selectedId, action: pending, note: note || undefined });
+      setPending(null);
+      setNote("");
+      await Promise.all([refreshList(), refreshFile()]);
+      showToast(`Review submitted: ${pending.replace("_", " ")}`, true);
+    } catch {
+      showToast("Failed to submit review", false);
+    } finally {
+      setSubmitting(false);
+    }
   }
-
-  if (error) {
-    return (
-      <div style={styles.container}>
-        <div style={{ ...styles.emptyState, color: "#fca5a5" }}>
-          Error loading files: {String(error)}
-        </div>
-      </div>
-    );
-  }
-
-  const files = data?.files ?? [];
 
   return (
-    <div style={styles.container}>
-      <div style={styles.heading}>Linked Files</div>
-
-      {/* Add file form */}
-      <div style={styles.addForm}>
-        <input
-          type="text"
-          placeholder="Enter file path..."
-          value={newPath}
-          onChange={(e) => setNewPath(e.target.value)}
-          onKeyDown={handleKeyDown}
-          style={styles.input}
-        />
-        <button onClick={handleAdd} style={styles.button}>
-          Add File
-        </button>
+    <div style={s.root}>
+      {/* Topbar */}
+      <div style={s.topbar}>
+        <span style={s.title}>File Viewer</span>
+        <div style={s.tabs}>
+          <button style={{ ...s.tab, ...(tab === "queue" ? s.tabActive : {}) }} onClick={() => setTab("queue")}>
+            Review Queue {tab === "queue" && filesData ? `(${filesData.total})` : ""}
+          </button>
+          <button style={{ ...s.tab, ...(tab === "all" ? s.tabActive : {}) }} onClick={() => setTab("all")}>
+            All Files
+          </button>
+        </div>
       </div>
 
-      {/* File list */}
-      {files.length === 0 ? (
-        <div style={styles.emptyState}>
-          No files linked to this issue yet. Add a file path above.
+      <div style={s.body}>
+        {/* File list sidebar */}
+        <div style={s.sidebar}>
+          <div style={s.sHead}>
+            <input style={s.search} placeholder="Search files…" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+          <div style={s.list}>
+            {listLoading && <div style={s.empty}>Loading…</div>}
+            {listError && <div style={s.empty}>Error loading files</div>}
+            {!listLoading && !listError && files.length === 0 && (
+              <div style={s.empty}>{tab === "queue" ? "No files pending review" : "No files found"}</div>
+            )}
+            {files.map(f => (
+              <FileItem key={f.id} file={f} selected={f.id === selectedId} onClick={() => setSelectedId(f.id)} />
+            ))}
+          </div>
         </div>
-      ) : (
-        <ul style={styles.fileList}>
-          {files.map((file) => (
-            <li key={file.id} style={styles.fileItem}>
-              <span style={styles.filePath} title={file.path}>
-                {file.path}
-              </span>
-              <span style={styles.badge(file.reviewStatus)}>
-                {file.reviewStatus}
-              </span>
-            </li>
-          ))}
-        </ul>
+
+        {/* Content area */}
+        <div style={s.content}>
+          {!selectedId ? (
+            <div style={s.placeholder}>Select a file to view</div>
+          ) : fileLoading ? (
+            <div style={s.placeholder}>Loading…</div>
+          ) : !file ? (
+            <div style={s.placeholder}>File not found</div>
+          ) : (
+            <div style={s.fileView}>
+              {/* File content */}
+              <div style={s.fileBody}>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 16 }}>{file.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted-foreground, #64748b)", marginTop: 2 }}>{file.path}</div>
+                </div>
+                {file.file_type === "text" ? (
+                  <pre style={s.pre}>{file.content ?? "(empty)"}</pre>
+                ) : file.file_type === "image" && file.content ? (
+                  <img src={file.content} alt={file.name} style={{ maxWidth: "100%", borderRadius: 6 }} />
+                ) : (
+                  <div style={s.placeholder}>No preview</div>
+                )}
+              </div>
+
+              {/* Metadata + review sidebar */}
+              <div style={s.fileSide}>
+                <div>
+                  <div style={s.mLabel}>Status</div>
+                  <StatusBadge status={file.review_status} />
+                </div>
+                <hr style={s.divider} />
+                {file.linked_issue_id && <div><div style={s.mLabel}>Linked Issue</div><div style={s.mValue}>{file.linked_issue_id}</div></div>}
+                {file.creating_agent_id && <div><div style={s.mLabel}>Created by</div><div style={s.mValue}>{file.creating_agent_id}</div></div>}
+                <hr style={s.divider} />
+
+                {pending ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={s.mLabel}>Note (optional)</div>
+                    <textarea
+                      value={note}
+                      onChange={e => setNote(e.target.value)}
+                      rows={3}
+                      placeholder="Add a note…"
+                      style={{ resize: "vertical", padding: "6px 8px", border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: "transparent", color: "inherit" }}
+                    />
+                    <button
+                      style={{ ...s.btn, background: pending === "approve" ? "#16a34a" : pending === "reject" ? "#dc2626" : "#ea580c", color: "#fff" }}
+                      onClick={submitReview}
+                      disabled={submitting}
+                    >
+                      {submitting ? "Submitting…" : `Confirm ${pending.replace("_", " ")}`}
+                    </button>
+                    <button style={{ ...s.btn, background: "var(--muted, #f1f5f9)", color: "inherit" }} onClick={() => { setPending(null); setNote(""); }}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={s.mLabel}>Review Actions</div>
+                    {file.review_status === "approved" ? (
+                      <div style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>✓ Already approved</div>
+                    ) : (
+                      <>
+                        <button style={{ ...s.btn, background: "#16a34a", color: "#fff" }} onClick={() => setPending("approve")}>✓ Approve</button>
+                        <button style={{ ...s.btn, background: "#ea580c", color: "#fff" }} onClick={() => setPending("request_changes")}>✎ Request Changes</button>
+                        <button style={{ ...s.btn, background: "#dc2626", color: "#fff" }} onClick={() => setPending("reject")}>✕ Reject</button>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {file.reviews && file.reviews.length > 0 && (
+                  <>
+                    <hr style={s.divider} />
+                    <div style={s.mLabel}>Review History</div>
+                    {file.reviews.map(r => (
+                      <div key={r.id} style={{ fontSize: 12, background: "var(--muted, #f8fafc)", borderRadius: 6, padding: "6px 8px" }}>
+                        <StatusBadge status={r.action} />
+                        {r.note && <div style={{ marginTop: 4, fontStyle: "italic", color: "var(--muted-foreground, #64748b)" }}>"{r.note}"</div>}
+                        <div style={{ marginTop: 2, color: "var(--muted-foreground, #64748b)" }}>{new Date(r.created_at).toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 20, right: 20, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, background: toast.ok ? "#16a34a" : "#dc2626", color: "#fff", zIndex: 9999, boxShadow: "0 4px 12px rgba(0,0,0,.15)" }}>
+          {toast.msg}
+        </div>
       )}
     </div>
   );

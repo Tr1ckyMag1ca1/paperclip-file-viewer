@@ -1,17 +1,14 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
-const PLUGIN_ID = "paperclip-file-viewer";
-const FILES_TAB_SLOT_ID = "files-tab";
-
 const manifest: PaperclipPluginManifestV1 = {
-  id: PLUGIN_ID,
+  id: "paperclipai.plugin-file-viewer",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "File Viewer",
   description:
-    "Browse and review files linked to issues. Register file paths against issues, track review status (pending/approved/rejected), and view file details — all from the Paperclip UI.",
+    "Browse and review files linked to Paperclip issues. Manage a review queue, approve or reject files, and keep a full review history — all from within Paperclip.",
   author: "Paperclip AI Agents",
-  categories: ["workspace", "ui"],
+  categories: ["ui", "workspace"],
   capabilities: [
     "plugin.state.read",
     "plugin.state.write",
@@ -21,15 +18,39 @@ const manifest: PaperclipPluginManifestV1 = {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
   },
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      seedExampleFiles: {
+        type: "boolean",
+        title: "Seed Example Files",
+        description:
+          "Create 3 example files (deploy.sh, config.yml, README.md) on first load. Useful for testing. Disable for clean installs.",
+        default: true,
+      },
+      defaultFlagForReview: {
+        type: "boolean",
+        title: "Flag New Files for Review",
+        description:
+          "When enabled, newly registered files are automatically added to the Review Queue.",
+        default: false,
+      },
+      maxFilesPerPage: {
+        type: "number",
+        title: "Files Per Page",
+        description: "Maximum number of files shown in the sidebar list.",
+        default: 100,
+      },
+    },
+  },
   ui: {
     slots: [
       {
-        type: "detailTab",
-        id: FILES_TAB_SLOT_ID,
-        displayName: "Files",
-        exportName: "FilesTab",
-        entityTypes: ["issue"],
-        order: 20,
+        type: "page",
+        id: "file-viewer-page",
+        displayName: "File Viewer",
+        routePath: "file-viewer",
+        exportName: "FileViewerPage",
       },
     ],
   },
