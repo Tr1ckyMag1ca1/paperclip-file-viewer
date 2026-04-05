@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.plugin-file-viewer",
   apiVersion: 1,
-  version: "0.2.1",
+  version: "0.3.0",
   displayName: "File Viewer",
   description:
     "Browse and review files linked to Paperclip issues. Manage a review queue, approve or reject files, and keep a full review history — all from within Paperclip.",
@@ -12,6 +12,9 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "plugin.state.read",
     "plugin.state.write",
+    "companies.read",
+    "issues.read",
+    "issue.documents.read",
     "ui.page.register",
     "ui.sidebar.register",
   ],
@@ -35,6 +38,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "When enabled, newly registered files are automatically added to the Review Queue.",
         default: false,
+      },
+      autoIndexDocuments: {
+        type: "boolean",
+        title: "Auto-Index Issue Documents",
+        description:
+          "Automatically discover and register all issue documents on plugin startup. New documents are added each time the plugin restarts.",
+        default: true,
       },
       maxFilesPerPage: {
         type: "number",

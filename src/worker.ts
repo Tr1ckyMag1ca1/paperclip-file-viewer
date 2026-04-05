@@ -24,64 +24,94 @@ type ReviewRecord = {
   created_at: string;
 };
 
-type FileStore = { files: FileRecord[]; seeded?: boolean };
+type FileStore = { files: FileRecord[]; indexed?: boolean };
 
 interface PluginConfig {
   seedExampleFiles?: boolean;
   defaultFlagForReview?: boolean;
   maxFilesPerPage?: number;
+  autoIndexDocuments?: boolean;
 }
 
 const STATE_KEY = "file-store";
 
-const SEED_FILES: FileRecord[] = [
-  {
-    id: "file-001", name: "deploy.sh", path: "/scripts/deploy.sh", file_type: "text",
-    content: "#!/bin/bash\nset -e\necho \"Deploying...\"\nnpm run build\ncp -r dist/ /var/www/app/\necho \"Done.\"",
-    linked_issue_id: "ALE-85", linked_task_id: null, review_status: "pending",
-    flagged_for_review: true, creating_agent_id: "founding-engineer",
-    created_at: new Date().toISOString(), updated_at: new Date().toISOString(), reviews: [],
-  },
-  {
-    id: "file-002", name: "config.yml", path: "/config/config.yml", file_type: "text",
-    content: "server:\n  host: 0.0.0.0\n  port: 3201\ndatabase:\n  path: ./file-viewer.db",
-    linked_issue_id: "ALE-83", linked_task_id: null, review_status: "pending",
-    flagged_for_review: true, creating_agent_id: "founding-engineer",
-    created_at: new Date().toISOString(), updated_at: new Date().toISOString(), reviews: [],
-  },
-  {
-    id: "file-003", name: "README.md", path: "/README.md", file_type: "text",
-    content: "# File Viewer\n\nBrowse and review files linked to Paperclip issues.\n\n## Setup\n\n```bash\nnpm install && npm start\n```",
-    linked_issue_id: null, linked_task_id: null, review_status: "approved",
-    flagged_for_review: false, creating_agent_id: "ceo",
-    created_at: new Date().toISOString(), updated_at: new Date().toISOString(), reviews: [],
-  },
-];
-
-async function loadStore(ctx: PluginContext, config: PluginConfig): Promise<FileStore> {
+async function loadStore(ctx: PluginContext): Promise<FileStore> {
   const stored = await ctx.state.get({ scopeKind: "instance", stateKey: STATE_KEY });
   if (stored && typeof stored === "object" && Array.isArray((stored as FileStore).files)) {
     return stored as FileStore;
   }
-  // First load — seed if configured
-  const seed: FileStore = {
-    files: config.seedExampleFiles !== false ? [...SEED_FILES] : [],
-    seeded: true,
-  };
-  await ctx.state.set({ scopeKind: "instance", stateKey: STATE_KEY }, seed);
-  return seed;
+  return { files: [] };
 }
 
 async function saveStore(ctx: PluginContext, store: FileStore): Promise<void> {
   await ctx.state.set({ scopeKind: "instance", stateKey: STATE_KEY }, store);
 }
 
+/** Index all issue documents from all companies into the file store */
+async function indexAllDocuments(ctx: PluginContext, store: FileStore): Promise<number> {
+  const existingPaths = new Set(store.files.map(f => f.path));
+  let added = 0;
+  const now = new Date().toISOString();
+
+  try {
+    const companies = await ctx.companies.list();
+    for (const company of companies) {
+      const issues = await ctx.issues.list({ companyId: company.id, limit: 500 });
+      for (const issue of issues) {
+        let docs;
+        try {
+          docs = await ctx.issues.documents.list(issue.id, company.id);
+        } catch {
+          continue;
+        }
+        for (const doc of docs) {
+          const path = `${issue.identifier}/documents/${doc.key}`;
+          if (existingPaths.has(path)) continue;
+
+          store.files.push({
+            id: `file-auto-${doc.key}-${issue.identifier}`,
+            name: doc.title || doc.key,
+            path,
+            file_type: "text",
+            content: null,
+            linked_issue_id: issue.identifier,
+            linked_task_id: null,
+            review_status: "pending",
+            flagged_for_review: false,
+            creating_agent_id: null,
+            created_at: now,
+            updated_at: now,
+            reviews: [],
+          });
+          existingPaths.add(path);
+          added++;
+        }
+      }
+    }
+  } catch (err) {
+    ctx.logger.warn("Auto-index failed (may lack capabilities): " + String(err));
+  }
+
+  return added;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     const config = (ctx.config.get() ?? {}) as PluginConfig;
 
+    // Auto-index issue documents on startup
+    if (config.autoIndexDocuments !== false) {
+      const store = await loadStore(ctx);
+      const added = await indexAllDocuments(ctx, store);
+      if (added > 0) {
+        store.indexed = true;
+        await saveStore(ctx, store);
+        ctx.logger.info(`Auto-indexed ${added} issue documents`);
+      }
+    }
+
     ctx.data.register("files", async (params) => {
-      const store = await loadStore(ctx, config);
+      const store = await loadStore(ctx);
       let files = store.files;
       if (params.flagged === true || params.flagged === "true") {
         files = files.filter(f => f.flagged_for_review && f.review_status === "pending");
@@ -105,7 +135,7 @@ const plugin = definePlugin({
 
     ctx.data.register("file", async (params) => {
       if (!params.id) throw new Error("id required");
-      const store = await loadStore(ctx, config);
+      const store = await loadStore(ctx);
       const file = store.files.find(f => f.id === params.id);
       if (!file) throw new Error("File not found: " + params.id);
       return file;
@@ -113,7 +143,7 @@ const plugin = definePlugin({
 
     ctx.actions.register("review", async (params) => {
       if (!params.id || !params.action) throw new Error("id and action required");
-      const store = await loadStore(ctx, config);
+      const store = await loadStore(ctx);
       const file = store.files.find(f => f.id === params.id);
       if (!file) throw new Error("File not found: " + params.id);
       const action = params.action as "approve" | "request_changes" | "reject";
@@ -132,9 +162,8 @@ const plugin = definePlugin({
 
     ctx.actions.register("register-file", async (params) => {
       if (!params.name || !params.path) throw new Error("name and path required");
-      const store = await loadStore(ctx, config);
+      const store = await loadStore(ctx);
 
-      // Duplicate check
       const existing = store.files.find(f => f.path === params.path && f.linked_issue_id === (params.linked_issue_id ?? null));
       if (existing) return { file: existing, duplicate: true };
 
@@ -155,6 +184,16 @@ const plugin = definePlugin({
       store.files.unshift(file);
       await saveStore(ctx, store);
       return { file, duplicate: false };
+    });
+
+    // Manual re-sync action
+    ctx.actions.register("sync-documents", async () => {
+      const store = await loadStore(ctx);
+      const added = await indexAllDocuments(ctx, store);
+      if (added > 0) {
+        await saveStore(ctx, store);
+      }
+      return { added, total: store.files.length };
     });
   },
   async onHealth() {

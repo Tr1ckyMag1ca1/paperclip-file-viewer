@@ -1,6 +1,6 @@
 {
   "name": "paperclip-file-viewer",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "private": false,
   "description": "A Paperclip plugin for browsing and reviewing files linked to issues. Manage a review queue, approve or reject files, and keep a full review history — all from within Paperclip.",
