@@ -47,7 +47,7 @@ async function saveStore(ctx: PluginContext, store: FileStore): Promise<void> {
   await ctx.state.set({ scopeKind: "instance", stateKey: STATE_KEY }, store);
 }
 
-/** Index all issue documents from all companies into the file store */
+/** Index all issue documents from all companies, including content */
 async function indexAllDocuments(ctx: PluginContext, store: FileStore): Promise<number> {
   const existingPaths = new Set(store.files.map(f => f.path));
   let added = 0;
@@ -64,16 +64,25 @@ async function indexAllDocuments(ctx: PluginContext, store: FileStore): Promise<
         } catch {
           continue;
         }
-        for (const doc of docs) {
-          const path = `${issue.identifier}/documents/${doc.key}`;
+        for (const docSummary of docs) {
+          const path = `${issue.identifier}/documents/${docSummary.key}`;
           if (existingPaths.has(path)) continue;
 
+          // Fetch full document content
+          let content: string | null = null;
+          try {
+            const fullDoc = await ctx.issues.documents.get(issue.id, docSummary.key, company.id);
+            content = fullDoc?.body ?? null;
+          } catch {
+            // content stays null
+          }
+
           store.files.push({
-            id: `file-auto-${doc.key}-${issue.identifier}`,
-            name: doc.title || doc.key,
+            id: `file-auto-${docSummary.key}-${issue.identifier}`,
+            name: docSummary.title || docSummary.key,
             path,
             file_type: "text",
-            content: null,
+            content,
             linked_issue_id: issue.identifier,
             linked_task_id: null,
             review_status: "pending",
@@ -89,7 +98,7 @@ async function indexAllDocuments(ctx: PluginContext, store: FileStore): Promise<
       }
     }
   } catch (err) {
-    ctx.logger.warn("Auto-index failed (may lack capabilities): " + String(err));
+    ctx.logger.warn("Auto-index failed: " + String(err));
   }
 
   return added;
@@ -99,7 +108,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     const config = (ctx.config.get() ?? {}) as PluginConfig;
 
-    // Auto-index issue documents on startup
+    // Auto-index on startup
     if (config.autoIndexDocuments !== false) {
       const store = await loadStore(ctx);
       const added = await indexAllDocuments(ctx, store);
@@ -113,6 +122,14 @@ const plugin = definePlugin({
     ctx.data.register("files", async (params) => {
       const store = await loadStore(ctx);
       let files = store.files;
+
+      // Filter by company prefix (e.g. "ALE", "PIC")
+      if (typeof params.companyPrefix === "string" && params.companyPrefix) {
+        const prefix = params.companyPrefix + "-";
+        files = files.filter(f =>
+          f.linked_issue_id?.startsWith(prefix) || !f.linked_issue_id
+        );
+      }
       if (params.flagged === true || params.flagged === "true") {
         files = files.filter(f => f.flagged_for_review && f.review_status === "pending");
       }
@@ -186,13 +203,10 @@ const plugin = definePlugin({
       return { file, duplicate: false };
     });
 
-    // Manual re-sync action
     ctx.actions.register("sync-documents", async () => {
       const store = await loadStore(ctx);
       const added = await indexAllDocuments(ctx, store);
-      if (added > 0) {
-        await saveStore(ctx, store);
-      }
+      if (added > 0) await saveStore(ctx, store);
       return { added, total: store.files.length };
     });
   },

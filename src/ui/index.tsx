@@ -123,7 +123,7 @@ function FileItem({ file, selected, onClick }: { file: FileRecord; selected: boo
   );
 }
 
-export function FileViewerPage(_props: PluginPageProps) {
+export function FileViewerPage({ context }: PluginPageProps) {
   const [tab, setTab]               = useState<"queue" | "all">("queue");
   const [search, setSearch]         = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -132,7 +132,10 @@ export function FileViewerPage(_props: PluginPageProps) {
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast]           = useState<{ msg: string; ok: boolean } | null>(null);
 
-  const listParams = tab === "queue" ? { flagged: true, q: search } : { q: search };
+  const companyPrefix = context?.companyPrefix ?? "";
+  const listParams = tab === "queue"
+    ? { flagged: true, q: search, companyPrefix }
+    : { q: search, companyPrefix };
 
   const { data: filesData, loading: listLoading, error: listError, refresh: refreshList } =
     usePluginData<FilesData>("files", listParams);
