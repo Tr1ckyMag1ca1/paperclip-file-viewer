@@ -34,118 +34,246 @@ export function FileViewerSidebar({ context }: PluginSidebarProps) {
   );
 }
 
-// ── Types (matches the running file-viewer server API) ─────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────
 
-type FileRecord = {
-  id: string;
-  name: string;
-  path: string;
-  file_type: "text" | "image";
-  content: string | null;
-  linked_issue_id: string | null;
-  linked_task_id: string | null;
-  review_status: "pending" | "approved" | "changes_requested" | "rejected";
-  flagged_for_review: number;
-  creating_agent_id: string | null;
-  created_at: string;
-  updated_at: string;
-  reviews?: ReviewRecord[];
-};
+type ReviewStatus = "pending" | "approved" | "changes_requested" | "rejected" | "dismissed";
 
-type ReviewRecord = {
+type ReviewEntry = {
   id: string;
   action: string;
   note: string | null;
-  created_at: string;
+  reviewedAt: string;
 };
 
-type FilesData = { files: FileRecord[]; total: number };
+type DocumentRecord = {
+  id: string;
+  name: string;
+  docKey: string;
+  issueId: string;
+  issueIdentifier: string;
+  issueTitle: string;
+  issueStatus: string;
+  issuePriority: string;
+  assigneeAgentId: string | null;
+  companyId: string;
+  companyPrefix: string;
+  projectId: string | null;
+  content: string | null;
+  format: string;
+  revisionNumber: number;
+  createdByAgentId: string | null;
+  updatedByAgentId: string | null;
+  reviewStatus: ReviewStatus;
+  reviews: ReviewEntry[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type DocumentsData = { documents: DocumentRecord[]; total: number };
+
+type IssueContext = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  projectId: string | null;
+  documents: { key: string; title: string | null; revisionNumber: number; updatedAt: string }[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+// ── Tab type ──────────────────────────────────────────────────────────────
+
+type TabId = "inbox" | "approved" | "dismissed" | "all";
+
+const TABS: { id: TabId; label: string; statusFilter: string | undefined }[] = [
+  { id: "inbox", label: "Inbox", statusFilter: "pending" },
+  { id: "approved", label: "Approved", statusFilter: "approved" },
+  { id: "dismissed", label: "Dismissed", statusFilter: "dismissed" },
+  { id: "all", label: "All", statusFilter: undefined },
+];
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
   root:        { display: "flex", flexDirection: "column", height: "100%", fontFamily: "inherit", fontSize: 14 },
-  topbar:      { display: "flex", alignItems: "center", gap: 12, padding: "0 16px", height: 48, borderBottom: "1px solid var(--border, #e2e8f0)", flexShrink: 0 },
+  topbar:      { display: "flex", alignItems: "center", gap: 12, padding: "0 16px", height: 48, borderBottom: "1px solid var(--border, #333)", flexShrink: 0 },
   title:       { fontWeight: 700, fontSize: 15 },
-  tabs:        { display: "flex", gap: 4, marginLeft: "auto" },
-  tab:         { background: "none", border: "none", cursor: "pointer", padding: "4px 12px", borderRadius: 6, fontSize: 13, color: "var(--muted-foreground, #64748b)" },
-  tabActive:   { background: "var(--accent, #f1f5f9)", color: "var(--foreground, #0f172a)", fontWeight: 600 },
+  tabs:        { display: "flex", gap: 2, marginLeft: "auto" },
+  tab:         { background: "none", border: "none", cursor: "pointer", padding: "4px 10px", borderRadius: 6, fontSize: 12, color: "var(--muted-foreground, #888)" },
+  tabActive:   { background: "var(--accent, #2a2a2a)", color: "var(--foreground, #e5e5e5)", fontWeight: 600 },
   body:        { display: "flex", flex: 1, overflow: "hidden" },
-  sidebar:     { width: 300, flexShrink: 0, borderRight: "1px solid var(--border, #e2e8f0)", display: "flex", flexDirection: "column", overflow: "hidden" },
-  sHead:       { padding: "10px 12px", borderBottom: "1px solid var(--border, #e2e8f0)" },
-  search:      { width: "100%", padding: "6px 10px", border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, fontSize: 13, background: "transparent", color: "inherit", boxSizing: "border-box" as const },
+  sidebar:     { width: 340, flexShrink: 0, borderRight: "1px solid var(--border, #333)", display: "flex", flexDirection: "column", overflow: "hidden" },
+  sHead:       { padding: "10px 12px", borderBottom: "1px solid var(--border, #333)", display: "flex", flexDirection: "column", gap: 6 },
+  search:      { width: "100%", padding: "6px 10px", border: "1px solid var(--border, #333)", borderRadius: 6, fontSize: 13, background: "transparent", color: "inherit", boxSizing: "border-box" as const },
   list:        { flex: 1, overflowY: "auto" as const },
-  item:        { padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid var(--border, #e2e8f0)", display: "flex", flexDirection: "column", gap: 2 },
-  itemSel:     { background: "var(--accent, #f1f5f9)" },
+  item:        { padding: "10px 12px", cursor: "pointer", borderBottom: "1px solid var(--border, #333)", display: "flex", flexDirection: "column", gap: 3 },
+  itemSel:     { background: "var(--accent, #2a2a2a)" },
   iName:       { fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
-  iPath:       { fontSize: 11, color: "var(--muted-foreground, #64748b)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
-  iMeta:       { display: "flex", gap: 4, flexWrap: "wrap" as const, alignItems: "center" },
+  iMeta:       { display: "flex", gap: 4, flexWrap: "wrap" as const, alignItems: "center", fontSize: 11, color: "var(--muted-foreground, #888)" },
   content:     { flex: 1, overflow: "auto", display: "flex", flexDirection: "column" },
-  placeholder: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted-foreground, #64748b)", fontSize: 13 },
-  fileView:    { display: "flex", flex: 1, overflow: "hidden" },
-  fileBody:    { flex: 1, overflow: "auto", padding: 20 },
-  fileSide:    { width: 260, flexShrink: 0, borderLeft: "1px solid var(--border, #e2e8f0)", padding: 16, overflowY: "auto" as const, display: "flex", flexDirection: "column", gap: 10 },
-  pre:         { background: "var(--muted, #f8fafc)", border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, padding: 16, fontSize: 12, overflowX: "auto" as const, whiteSpace: "pre-wrap" as const, wordBreak: "break-all" as const, lineHeight: 1.6 },
-  mLabel:      { fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.5px", color: "var(--muted-foreground, #64748b)", marginBottom: 2 },
+  placeholder: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted-foreground, #888)", fontSize: 13 },
+  docView:     { display: "flex", flex: 1, overflow: "hidden" },
+  docBody:     { flex: 1, overflow: "auto", padding: 20 },
+  docSide:     { width: 280, flexShrink: 0, borderLeft: "1px solid var(--border, #333)", padding: 16, overflowY: "auto" as const, display: "flex", flexDirection: "column", gap: 10 },
+  pre:         { background: "var(--muted, #1a1a1a)", border: "1px solid var(--border, #333)", borderRadius: 6, padding: 16, fontSize: 12, overflowX: "auto" as const, whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const, lineHeight: 1.7 },
+  mLabel:      { fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.5px", color: "var(--muted-foreground, #888)", marginBottom: 2 },
   mValue:      { fontSize: 13 },
   btn:         { padding: "7px 12px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600, width: "100%" },
-  divider:     { border: "none", borderTop: "1px solid var(--border, #e2e8f0)", margin: "4px 0" },
-  empty:       { padding: "32px 12px", textAlign: "center" as const, color: "var(--muted-foreground, #64748b)", fontSize: 13 },
+  divider:     { border: "none", borderTop: "1px solid var(--border, #333)", margin: "4px 0" },
+  empty:       { padding: "32px 12px", textAlign: "center" as const, color: "var(--muted-foreground, #888)", fontSize: 13 },
+  issueLink:   { fontSize: 12, color: "var(--primary, #818cf8)", textDecoration: "none", fontWeight: 500 },
+  issueMeta:   { fontSize: 12, color: "var(--muted-foreground, #888)", lineHeight: 1.5 },
 };
+
+// ── Badge components ──────────────────────────────────────────────────────
 
 const STATUS_STYLE: Record<string, { bg: string; color: string }> = {
   pending:           { bg: "#fef9c3", color: "#854d0e" },
   approved:          { bg: "#dcfce7", color: "#166534" },
   changes_requested: { bg: "#ffedd5", color: "#9a3412" },
   rejected:          { bg: "#fee2e2", color: "#991b1b" },
+  dismissed:         { bg: "#e2e8f0", color: "#475569" },
+};
+
+const ISSUE_STATUS_STYLE: Record<string, { bg: string; color: string }> = {
+  backlog:     { bg: "#374151", color: "#d1d5db" },
+  todo:        { bg: "#3b82f6", color: "#fff" },
+  in_progress: { bg: "#f59e0b", color: "#fff" },
+  in_review:   { bg: "#8b5cf6", color: "#fff" },
+  done:        { bg: "#22c55e", color: "#fff" },
+  blocked:     { bg: "#ef4444", color: "#fff" },
+  cancelled:   { bg: "#6b7280", color: "#fff" },
 };
 
 function Badge({ label, bg, color }: { label: string; bg: string; color: string }) {
-  return <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 4, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", background: bg, color }}>{label}</span>;
+  return (
+    <span style={{
+      display: "inline-block", padding: "1px 7px", borderRadius: 4,
+      fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+      letterSpacing: "0.5px", background: bg, color, lineHeight: "18px",
+    }}>
+      {label.replace(/_/g, " ")}
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const st = STATUS_STYLE[status] ?? { bg: "#f1f5f9", color: "#475569" };
-  return <Badge label={status.replace("_", " ")} bg={st.bg} color={st.color} />;
+  const st = STATUS_STYLE[status] ?? { bg: "#374151", color: "#d1d5db" };
+  return <Badge label={status} bg={st.bg} color={st.color} />;
 }
 
-function FileItem({ file, selected, onClick }: { file: FileRecord; selected: boolean; onClick: () => void }) {
+function IssueStatusBadge({ status }: { status: string }) {
+  const st = ISSUE_STATUS_STYLE[status] ?? { bg: "#374151", color: "#d1d5db" };
+  return <Badge label={status} bg={st.bg} color={st.color} />;
+}
+
+// ── Document list item ────────────────────────────────────────────────────
+
+function DocItem({ doc, selected, onClick }: { doc: DocumentRecord; selected: boolean; onClick: () => void }) {
   return (
     <div style={{ ...s.item, ...(selected ? s.itemSel : {}) }} onClick={onClick}>
-      <div style={s.iName}>{file.name}</div>
-      <div style={s.iPath}>{file.path}</div>
+      <div style={s.iName}>{doc.name}</div>
       <div style={s.iMeta}>
-        <StatusBadge status={file.review_status} />
-        {file.flagged_for_review ? <Badge label="Flagged" bg="#ede9fe" color="#5b21b6" /> : null}
-        {file.linked_issue_id ? <span style={{ fontSize: 11, color: "var(--muted-foreground, #64748b)" }}>{file.linked_issue_id}</span> : null}
+        <StatusBadge status={doc.reviewStatus} />
+        <IssueStatusBadge status={doc.issueStatus} />
+        <span>{doc.issueIdentifier}</span>
+        {doc.assigneeAgentId && <span style={{ opacity: 0.7 }}>{doc.assigneeAgentId}</span>}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted-foreground, #888)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+        {doc.issueTitle}
       </div>
     </div>
   );
 }
 
+// ── Issue context panel ───────────────────────────────────────────────────
+
+function IssueContextPanel({ issueId, companyId, companyPrefix }: { issueId: string; companyId: string; companyPrefix: string }) {
+  const { data: issue, loading } = usePluginData<IssueContext>("issue-context", { issueId, companyId });
+
+  if (loading) return <div style={{ fontSize: 12, color: "var(--muted-foreground, #888)" }}>Loading issue...</div>;
+  if (!issue) return null;
+
+  const issueUrl = `/${companyPrefix}/issues/${issue.identifier}`;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={s.mLabel}>Linked Issue</div>
+      <a href={issueUrl} style={s.issueLink}>{issue.identifier}: {issue.title}</a>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <IssueStatusBadge status={issue.status} />
+        <Badge label={issue.priority} bg="#374151" color="#d1d5db" />
+      </div>
+      {issue.description && (
+        <div style={{ ...s.issueMeta, maxHeight: 80, overflow: "hidden", textOverflow: "ellipsis" }}>
+          {issue.description.slice(0, 200)}{issue.description.length > 200 ? "..." : ""}
+        </div>
+      )}
+      {issue.assigneeAgentId && (
+        <div style={s.issueMeta}>Agent: {issue.assigneeAgentId}</div>
+      )}
+      {issue.documents.length > 1 && (
+        <div style={{ fontSize: 11, color: "var(--muted-foreground, #888)" }}>
+          {issue.documents.length} documents on this issue
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Review history ────────────────────────────────────────────────────────
+
+function ReviewHistory({ reviews }: { reviews: ReviewEntry[] }) {
+  if (!reviews.length) return null;
+  return (
+    <>
+      <hr style={s.divider} />
+      <div style={s.mLabel}>Review History</div>
+      {reviews.slice().reverse().map(r => (
+        <div key={r.id} style={{ fontSize: 12, background: "var(--muted, #1a1a1a)", borderRadius: 6, padding: "6px 8px" }}>
+          <StatusBadge status={r.action === "request_changes" ? "changes_requested" : r.action === "approve" ? "approved" : r.action === "dismiss" ? "dismissed" : r.action} />
+          {r.note && <div style={{ marginTop: 4, fontStyle: "italic", color: "var(--muted-foreground, #888)" }}>"{r.note}"</div>}
+          <div style={{ marginTop: 2, color: "var(--muted-foreground, #888)" }}>{new Date(r.reviewedAt).toLocaleString()}</div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+// ── Main page component ───────────────────────────────────────────────────
+
 export function FileViewerPage({ context }: PluginPageProps) {
-  const [tab, setTab]               = useState<"queue" | "all">("queue");
-  const [search, setSearch]         = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pending, setPending]       = useState<string | null>(null);
-  const [note, setNote]             = useState("");
+  const [tab, setTab] = useState<TabId>("inbox");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<{ issueId: string; docKey: string; companyId: string; companyPrefix: string } | null>(null);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const [wakeAgent, setWakeAgent] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast]           = useState<{ msg: string; ok: boolean } | null>(null);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const companyPrefix = context?.companyPrefix ?? "";
-  const listParams = tab === "queue"
-    ? { flagged: true, q: search, companyPrefix }
-    : { q: search, companyPrefix };
+  const activeTab = TABS.find(t => t.id === tab)!;
 
-  const { data: filesData, loading: listLoading, error: listError, refresh: refreshList } =
-    usePluginData<FilesData>("files", listParams);
+  const listParams: Record<string, string> = { companyPrefix };
+  if (activeTab.statusFilter) listParams.status = activeTab.statusFilter;
+  if (search) listParams.q = search;
 
-  const { data: file, loading: fileLoading, refresh: refreshFile } =
-    usePluginData<FileRecord>("file", selectedId ? { id: selectedId } : undefined);
+  const { data: docsData, loading: listLoading, error: listError, refresh: refreshList } =
+    usePluginData<DocumentsData>("documents", listParams);
+
+  const { data: fullDoc, loading: docLoading, refresh: refreshDoc } =
+    usePluginData<DocumentRecord>("document", selected ? { issueId: selected.issueId, docKey: selected.docKey, companyId: selected.companyId } : undefined);
 
   const reviewAction = usePluginAction("review");
+  const dismissAction = usePluginAction("dismiss");
+  const resetAction = usePluginAction("reset-review");
 
-  const files = filesData?.files ?? [];
+  const docs = docsData?.documents ?? [];
 
   const showToast = useCallback((msg: string, ok: boolean) => {
     setToast({ msg, ok });
@@ -153,14 +281,26 @@ export function FileViewerPage({ context }: PluginPageProps) {
   }, []);
 
   async function submitReview() {
-    if (!selectedId || !pending) return;
+    if (!selected || !pendingAction) return;
     setSubmitting(true);
     try {
-      await reviewAction({ id: selectedId, action: pending, note: note || undefined });
-      setPending(null);
+      if (pendingAction === "dismiss") {
+        await dismissAction({ issueId: selected.issueId, docKey: selected.docKey, note: note || undefined });
+      } else {
+        await reviewAction({
+          issueId: selected.issueId,
+          docKey: selected.docKey,
+          companyId: selected.companyId,
+          action: pendingAction,
+          note: note || undefined,
+          wakeAgent: wakeAgent && (pendingAction === "request_changes" || pendingAction === "reject"),
+        });
+      }
+      setPendingAction(null);
       setNote("");
-      await Promise.all([refreshList(), refreshFile()]);
-      showToast(`Review submitted: ${pending.replace("_", " ")}`, true);
+      await Promise.all([refreshList(), refreshDoc()]);
+      const label = pendingAction.replace(/_/g, " ");
+      showToast(`Review: ${label}`, true);
     } catch {
       showToast("Failed to submit review", false);
     } finally {
@@ -168,132 +308,237 @@ export function FileViewerPage({ context }: PluginPageProps) {
     }
   }
 
+  async function resetReview() {
+    if (!selected) return;
+    setSubmitting(true);
+    try {
+      await resetAction({ issueId: selected.issueId, docKey: selected.docKey });
+      await Promise.all([refreshList(), refreshDoc()]);
+      showToast("Reset to pending", true);
+    } catch {
+      showToast("Failed to reset", false);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function selectDoc(doc: DocumentRecord) {
+    setSelected({ issueId: doc.issueId, docKey: doc.docKey, companyId: doc.companyId, companyPrefix: doc.companyPrefix });
+    setPendingAction(null);
+    setNote("");
+  }
+
   return (
     <div style={s.root}>
       {/* Topbar */}
       <div style={s.topbar}>
-        <span style={s.title}>File Viewer</span>
+        <span style={s.title}>Document Review</span>
         <div style={s.tabs}>
-          <button style={{ ...s.tab, ...(tab === "queue" ? s.tabActive : {}) }} onClick={() => setTab("queue")}>
-            Review Queue {tab === "queue" && filesData ? `(${filesData.total})` : ""}
-          </button>
-          <button style={{ ...s.tab, ...(tab === "all" ? s.tabActive : {}) }} onClick={() => setTab("all")}>
-            All Files
-          </button>
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              style={{ ...s.tab, ...(tab === t.id ? s.tabActive : {}) }}
+              onClick={() => { setTab(t.id); setSelected(null); }}
+            >
+              {t.label}
+              {tab === t.id && docsData ? ` (${docsData.total})` : ""}
+            </button>
+          ))}
         </div>
       </div>
 
       <div style={s.body}>
-        {/* File list sidebar */}
+        {/* Document list sidebar */}
         <div style={s.sidebar}>
           <div style={s.sHead}>
-            <input style={s.search} placeholder="Search files…" value={search} onChange={e => setSearch(e.target.value)} />
+            <input
+              style={s.search}
+              placeholder="Search documents..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
           </div>
           <div style={s.list}>
-            {listLoading && <div style={s.empty}>Loading…</div>}
-            {listError && <div style={s.empty}>Error loading files</div>}
-            {!listLoading && !listError && files.length === 0 && (
-              <div style={s.empty}>{tab === "queue" ? "No files pending review" : "No files found"}</div>
+            {listLoading && <div style={s.empty}>Loading...</div>}
+            {listError && <div style={s.empty}>Error loading documents</div>}
+            {!listLoading && !listError && docs.length === 0 && (
+              <div style={s.empty}>
+                {tab === "inbox" ? "No documents pending review" : "No documents found"}
+              </div>
             )}
-            {files.map(f => (
-              <FileItem key={f.id} file={f} selected={f.id === selectedId} onClick={() => setSelectedId(f.id)} />
+            {docs.map(d => (
+              <DocItem
+                key={d.id}
+                doc={d}
+                selected={selected?.issueId === d.issueId && selected?.docKey === d.docKey}
+                onClick={() => selectDoc(d)}
+              />
             ))}
           </div>
         </div>
 
         {/* Content area */}
         <div style={s.content}>
-          {!selectedId ? (
-            <div style={s.placeholder}>Select a file to view</div>
-          ) : fileLoading ? (
-            <div style={s.placeholder}>Loading…</div>
-          ) : !file ? (
-            <div style={s.placeholder}>File not found</div>
+          {!selected ? (
+            <div style={s.placeholder}>Select a document to review</div>
+          ) : docLoading ? (
+            <div style={s.placeholder}>Loading...</div>
+          ) : !fullDoc ? (
+            <div style={s.placeholder}>Document not found</div>
           ) : (
-            <div style={s.fileView}>
-              {/* File content */}
-              <div style={s.fileBody}>
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, fontSize: 16 }}>{file.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted-foreground, #64748b)", marginTop: 2 }}>{file.path}</div>
+            <div style={s.docView}>
+              {/* Document content */}
+              <div style={s.docBody}>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontWeight: 700, fontSize: 16 }}>{fullDoc.name}</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    <a
+                      href={`/${fullDoc.companyPrefix}/issues/${fullDoc.issueIdentifier}#document-${fullDoc.docKey}`}
+                      style={s.issueLink}
+                    >
+                      {fullDoc.issueIdentifier}
+                    </a>
+                    <StatusBadge status={fullDoc.reviewStatus} />
+                    {fullDoc.revisionNumber > 1 && (
+                      <span style={{ fontSize: 11, color: "var(--muted-foreground, #888)" }}>
+                        v{fullDoc.revisionNumber}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                {file.file_type === "text" ? (
-                  <pre style={s.pre}>{file.content ?? "(empty)"}</pre>
-                ) : file.file_type === "image" && file.content ? (
-                  <img src={file.content} alt={file.name} style={{ maxWidth: "100%", borderRadius: 6 }} />
-                ) : (
-                  <div style={s.placeholder}>No preview</div>
-                )}
+                <pre style={s.pre}>{fullDoc.content ?? "(empty)"}</pre>
               </div>
 
               {/* Metadata + review sidebar */}
-              <div style={s.fileSide}>
-                <div>
-                  <div style={s.mLabel}>Status</div>
-                  <StatusBadge status={file.review_status} />
-                </div>
-                <hr style={s.divider} />
-                {file.linked_issue_id && <div><div style={s.mLabel}>Linked Issue</div><div style={s.mValue}>{file.linked_issue_id}</div></div>}
-                {file.creating_agent_id && <div><div style={s.mLabel}>Created by</div><div style={s.mValue}>{file.creating_agent_id}</div></div>}
+              <div style={s.docSide}>
+                {/* Issue context */}
+                <IssueContextPanel
+                  issueId={fullDoc.issueId}
+                  companyId={fullDoc.companyId}
+                  companyPrefix={fullDoc.companyPrefix}
+                />
+
                 <hr style={s.divider} />
 
-                {pending ? (
+                {/* Document metadata */}
+                <div>
+                  <div style={s.mLabel}>Review Status</div>
+                  <StatusBadge status={fullDoc.reviewStatus} />
+                </div>
+
+                {fullDoc.createdByAgentId && (
+                  <div>
+                    <div style={s.mLabel}>Created by</div>
+                    <div style={s.mValue}>{fullDoc.createdByAgentId}</div>
+                  </div>
+                )}
+
+                {fullDoc.revisionNumber > 0 && (
+                  <div>
+                    <div style={s.mLabel}>Revision</div>
+                    <div style={s.mValue}>v{fullDoc.revisionNumber}</div>
+                  </div>
+                )}
+
+                <hr style={s.divider} />
+
+                {/* Review actions */}
+                {pendingAction ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div style={s.mLabel}>Note (optional)</div>
+                    <div style={s.mLabel}>
+                      {pendingAction === "dismiss" ? "Dismiss note (optional)" : "Review note (optional)"}
+                    </div>
                     <textarea
                       value={note}
                       onChange={e => setNote(e.target.value)}
                       rows={3}
-                      placeholder="Add a note…"
-                      style={{ resize: "vertical", padding: "6px 8px", border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: "transparent", color: "inherit" }}
+                      placeholder={pendingAction === "request_changes" ? "What needs to change..." : "Add a note..."}
+                      style={{
+                        resize: "vertical", padding: "6px 8px",
+                        border: "1px solid var(--border, #333)", borderRadius: 6,
+                        fontSize: 13, fontFamily: "inherit",
+                        background: "transparent", color: "inherit",
+                      }}
                     />
+                    {(pendingAction === "request_changes" || pendingAction === "reject") && (
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={wakeAgent}
+                          onChange={e => setWakeAgent(e.target.checked)}
+                          style={{ accentColor: "var(--primary, #818cf8)" }}
+                        />
+                        Wake agent to revise
+                      </label>
+                    )}
                     <button
-                      style={{ ...s.btn, background: pending === "approve" ? "#16a34a" : pending === "reject" ? "#dc2626" : "#ea580c", color: "#fff" }}
+                      style={{
+                        ...s.btn,
+                        background: pendingAction === "approve" ? "#16a34a"
+                          : pendingAction === "reject" ? "#dc2626"
+                          : pendingAction === "dismiss" ? "#6b7280"
+                          : "#ea580c",
+                        color: "#fff",
+                      }}
                       onClick={submitReview}
                       disabled={submitting}
                     >
-                      {submitting ? "Submitting…" : `Confirm ${pending.replace("_", " ")}`}
+                      {submitting ? "Submitting..." : `Confirm ${pendingAction.replace(/_/g, " ")}`}
                     </button>
-                    <button style={{ ...s.btn, background: "var(--muted, #f1f5f9)", color: "inherit" }} onClick={() => { setPending(null); setNote(""); }}>
+                    <button
+                      style={{ ...s.btn, background: "var(--muted, #1a1a1a)", color: "inherit" }}
+                      onClick={() => { setPendingAction(null); setNote(""); }}
+                    >
                       Cancel
                     </button>
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={s.mLabel}>Review Actions</div>
-                    {file.review_status === "approved" ? (
-                      <div style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>✓ Already approved</div>
+                    <div style={s.mLabel}>Actions</div>
+                    {fullDoc.reviewStatus === "approved" ? (
+                      <>
+                        <div style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>Approved</div>
+                        <button style={{ ...s.btn, background: "var(--muted, #1a1a1a)", color: "inherit", fontSize: 12 }} onClick={resetReview} disabled={submitting}>
+                          Reset to pending
+                        </button>
+                      </>
+                    ) : fullDoc.reviewStatus === "dismissed" ? (
+                      <>
+                        <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>Dismissed</div>
+                        <button style={{ ...s.btn, background: "var(--muted, #1a1a1a)", color: "inherit", fontSize: 12 }} onClick={resetReview} disabled={submitting}>
+                          Move back to inbox
+                        </button>
+                      </>
                     ) : (
                       <>
-                        <button style={{ ...s.btn, background: "#16a34a", color: "#fff" }} onClick={() => setPending("approve")}>✓ Approve</button>
-                        <button style={{ ...s.btn, background: "#ea580c", color: "#fff" }} onClick={() => setPending("request_changes")}>✎ Request Changes</button>
-                        <button style={{ ...s.btn, background: "#dc2626", color: "#fff" }} onClick={() => setPending("reject")}>✕ Reject</button>
+                        <button style={{ ...s.btn, background: "#16a34a", color: "#fff" }} onClick={() => setPendingAction("approve")}>Approve</button>
+                        <button style={{ ...s.btn, background: "#ea580c", color: "#fff" }} onClick={() => setPendingAction("request_changes")}>Request Changes</button>
+                        <button style={{ ...s.btn, background: "#dc2626", color: "#fff" }} onClick={() => setPendingAction("reject")}>Reject</button>
+                        <hr style={s.divider} />
+                        <button style={{ ...s.btn, background: "var(--muted, #1a1a1a)", color: "var(--muted-foreground, #888)" }} onClick={() => setPendingAction("dismiss")}>
+                          Dismiss (no review needed)
+                        </button>
                       </>
                     )}
                   </div>
                 )}
 
-                {file.reviews && file.reviews.length > 0 && (
-                  <>
-                    <hr style={s.divider} />
-                    <div style={s.mLabel}>Review History</div>
-                    {file.reviews.map(r => (
-                      <div key={r.id} style={{ fontSize: 12, background: "var(--muted, #f8fafc)", borderRadius: 6, padding: "6px 8px" }}>
-                        <StatusBadge status={r.action} />
-                        {r.note && <div style={{ marginTop: 4, fontStyle: "italic", color: "var(--muted-foreground, #64748b)" }}>"{r.note}"</div>}
-                        <div style={{ marginTop: 2, color: "var(--muted-foreground, #64748b)" }}>{new Date(r.created_at).toLocaleString()}</div>
-                      </div>
-                    ))}
-                  </>
-                )}
+                {/* Review history */}
+                <ReviewHistory reviews={fullDoc.reviews} />
               </div>
             </div>
           )}
         </div>
       </div>
 
+      {/* Toast */}
       {toast && (
-        <div style={{ position: "fixed", bottom: 20, right: 20, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, background: toast.ok ? "#16a34a" : "#dc2626", color: "#fff", zIndex: 9999, boxShadow: "0 4px 12px rgba(0,0,0,.15)" }}>
+        <div style={{
+          position: "fixed", bottom: 20, right: 20, padding: "10px 16px",
+          borderRadius: 8, fontSize: 13, fontWeight: 600,
+          background: toast.ok ? "#16a34a" : "#dc2626", color: "#fff",
+          zIndex: 9999, boxShadow: "0 4px 12px rgba(0,0,0,.3)",
+        }}>
           {toast.msg}
         </div>
       )}

@@ -1,217 +1,435 @@
 import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
 
-type FileRecord = {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Review status tracked in plugin state (overlay on native documents). */
+type ReviewStatus = "pending" | "approved" | "changes_requested" | "rejected" | "dismissed";
+
+/** A single review entry in the history. */
+type ReviewEntry = {
+  id: string;
+  action: "approve" | "request_changes" | "reject" | "dismiss";
+  note: string | null;
+  reviewedAt: string;
+};
+
+/** Per-document review state stored in plugin state. */
+type DocReviewState = {
+  reviewStatus: ReviewStatus;
+  reviews: ReviewEntry[];
+  updatedAt: string;
+};
+
+/** Plugin config schema. */
+interface PluginConfig {
+  autoIndexDocuments?: boolean;
+  maxFilesPerPage?: number;
+}
+
+/** Unified document record returned to the UI. */
+interface DocumentRecord {
+  /** Composite key: `{issueIdentifier}/{docKey}` */
   id: string;
   name: string;
-  path: string;
-  file_type: "text" | "image";
+  docKey: string;
+  issueId: string;
+  issueIdentifier: string;
+  issueTitle: string;
+  issueStatus: string;
+  issuePriority: string;
+  assigneeAgentId: string | null;
+  companyId: string;
+  companyPrefix: string;
+  projectId: string | null;
   content: string | null;
-  linked_issue_id: string | null;
-  linked_task_id: string | null;
-  review_status: "pending" | "approved" | "changes_requested" | "rejected";
-  flagged_for_review: boolean;
-  creating_agent_id: string | null;
-  created_at: string;
-  updated_at: string;
-  reviews: ReviewRecord[];
-};
-
-type ReviewRecord = {
-  id: string;
-  file_id: string;
-  action: "approve" | "request_changes" | "reject";
-  note: string | null;
-  created_at: string;
-};
-
-type FileStore = { files: FileRecord[]; indexed?: boolean };
-
-interface PluginConfig {
-  seedExampleFiles?: boolean;
-  defaultFlagForReview?: boolean;
-  maxFilesPerPage?: number;
-  autoIndexDocuments?: boolean;
+  format: string;
+  revisionNumber: number;
+  createdByAgentId: string | null;
+  updatedByAgentId: string | null;
+  reviewStatus: ReviewStatus;
+  reviews: ReviewEntry[];
+  createdAt: string;
+  updatedAt: string;
 }
 
-const STATE_KEY = "file-store";
+// ---------------------------------------------------------------------------
+// State helpers — review state is stored per-document in plugin state
+// ---------------------------------------------------------------------------
 
-async function loadStore(ctx: PluginContext): Promise<FileStore> {
-  const stored = await ctx.state.get({ scopeKind: "instance", stateKey: STATE_KEY });
-  if (stored && typeof stored === "object" && Array.isArray((stored as FileStore).files)) {
-    return stored as FileStore;
+const REVIEW_STATE_NS = "doc-reviews";
+
+function reviewScopeKey(issueId: string, docKey: string) {
+  return {
+    scopeKind: "issue" as const,
+    scopeId: issueId,
+    namespace: REVIEW_STATE_NS,
+    stateKey: docKey,
+  };
+}
+
+async function getReviewState(ctx: PluginContext, issueId: string, docKey: string): Promise<DocReviewState | null> {
+  const raw = await ctx.state.get(reviewScopeKey(issueId, docKey));
+  if (raw && typeof raw === "object" && "reviewStatus" in (raw as Record<string, unknown>)) {
+    return raw as DocReviewState;
   }
-  return { files: [] };
+  return null;
 }
 
-async function saveStore(ctx: PluginContext, store: FileStore): Promise<void> {
-  await ctx.state.set({ scopeKind: "instance", stateKey: STATE_KEY }, store);
+async function setReviewState(ctx: PluginContext, issueId: string, docKey: string, state: DocReviewState): Promise<void> {
+  await ctx.state.set(reviewScopeKey(issueId, docKey), state);
 }
 
-/** Index all issue documents from all companies, including content */
-async function indexAllDocuments(ctx: PluginContext, store: FileStore): Promise<number> {
-  const existingPaths = new Set(store.files.map(f => f.path));
-  let added = 0;
-  const now = new Date().toISOString();
+// ---------------------------------------------------------------------------
+// Document indexing — pull from native Paperclip documents
+// ---------------------------------------------------------------------------
+
+async function indexDocuments(ctx: PluginContext, params: {
+  companyPrefix?: string;
+  status?: string;
+  q?: string;
+  issueIdentifier?: string;
+  agentId?: string;
+  limit?: number;
+}): Promise<{ documents: DocumentRecord[]; total: number }> {
+  const limit = params.limit ?? 100;
+  const documents: DocumentRecord[] = [];
 
   try {
     const companies = await ctx.companies.list();
+
     for (const company of companies) {
+      // Skip companies that don't match filter
+      if (params.companyPrefix) {
+        // Company prefix is usually the first few chars of identifier
+        // We filter by checking issue identifiers later
+      }
+
       const issues = await ctx.issues.list({ companyId: company.id, limit: 500 });
+
       for (const issue of issues) {
-        let docs;
+        if (!issue.identifier) continue;
+
+        // Filter by company prefix
+        if (params.companyPrefix) {
+          const prefix = params.companyPrefix + "-";
+          if (!issue.identifier.startsWith(prefix)) continue;
+        }
+
+        // Filter by specific issue
+        if (params.issueIdentifier && issue.identifier !== params.issueIdentifier) continue;
+
+        // Filter by agent
+        if (params.agentId && issue.assigneeAgentId !== params.agentId) continue;
+
+        let docSummaries;
         try {
-          docs = await ctx.issues.documents.list(issue.id, company.id);
+          docSummaries = await ctx.issues.documents.list(issue.id, company.id);
         } catch {
           continue;
         }
-        for (const docSummary of docs) {
-          const path = `${issue.identifier}/documents/${docSummary.key}`;
-          if (existingPaths.has(path)) continue;
 
-          // Fetch full document content
-          let content: string | null = null;
-          try {
-            const fullDoc = await ctx.issues.documents.get(issue.id, docSummary.key, company.id);
-            content = fullDoc?.body ?? null;
-          } catch {
-            // content stays null
+        for (const docSummary of docSummaries) {
+          const compositeId = `${issue.identifier}/${docSummary.key}`;
+
+          // Get review state from plugin state
+          const reviewState = await getReviewState(ctx, issue.id, docSummary.key);
+          const reviewStatus: ReviewStatus = reviewState?.reviewStatus ?? "pending";
+
+          // Filter by status
+          if (params.status && reviewStatus !== params.status) continue;
+
+          // Filter by search query
+          if (params.q) {
+            const q = params.q.toLowerCase();
+            const searchable = [
+              docSummary.title ?? "",
+              docSummary.key,
+              issue.identifier,
+              issue.title,
+            ].join(" ").toLowerCase();
+            if (!searchable.includes(q)) continue;
           }
 
-          store.files.push({
-            id: `file-auto-${docSummary.key}-${issue.identifier}`,
+          // Derive company prefix from issue identifier
+          const prefixMatch = issue.identifier.match(/^([A-Z]+)-/);
+          const derivedPrefix = prefixMatch ? prefixMatch[1] : "";
+
+          documents.push({
+            id: compositeId,
             name: docSummary.title || docSummary.key,
-            path,
-            file_type: "text",
-            content,
-            linked_issue_id: issue.identifier,
-            linked_task_id: null,
-            review_status: "pending",
-            flagged_for_review: false,
-            creating_agent_id: null,
-            created_at: now,
-            updated_at: now,
-            reviews: [],
+            docKey: docSummary.key,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            issueTitle: issue.title,
+            issueStatus: issue.status,
+            issuePriority: issue.priority,
+            assigneeAgentId: issue.assigneeAgentId,
+            companyId: company.id,
+            companyPrefix: derivedPrefix,
+            projectId: issue.projectId,
+            content: null, // Fetched on demand via "document" data handler
+            format: docSummary.format,
+            revisionNumber: docSummary.latestRevisionNumber,
+            createdByAgentId: docSummary.createdByAgentId,
+            updatedByAgentId: docSummary.updatedByAgentId,
+            reviewStatus,
+            reviews: reviewState?.reviews ?? [],
+            createdAt: String(docSummary.createdAt),
+            updatedAt: String(docSummary.updatedAt),
           });
-          existingPaths.add(path);
-          added++;
         }
       }
     }
   } catch (err) {
-    ctx.logger.warn("Auto-index failed: " + String(err));
+    ctx.logger.warn("Document indexing failed: " + String(err));
   }
 
-  return added;
+  // Sort: pending first, then by updated date descending
+  const statusOrder: Record<string, number> = {
+    pending: 0,
+    changes_requested: 1,
+    approved: 2,
+    rejected: 3,
+    dismissed: 4,
+  };
+  documents.sort((a, b) => {
+    const sa = statusOrder[a.reviewStatus] ?? 5;
+    const sb = statusOrder[b.reviewStatus] ?? 5;
+    if (sa !== sb) return sa - sb;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+
+  return { documents: documents.slice(0, limit), total: documents.length };
 }
+
+// ---------------------------------------------------------------------------
+// Plugin definition
+// ---------------------------------------------------------------------------
 
 const plugin = definePlugin({
   async setup(ctx) {
-    const config = (ctx.config.get() ?? {}) as PluginConfig;
+    const config = (await ctx.config.get() ?? {}) as PluginConfig;
 
-    // Auto-index on startup
-    if (config.autoIndexDocuments !== false) {
-      const store = await loadStore(ctx);
-      const added = await indexAllDocuments(ctx, store);
-      if (added > 0) {
-        store.indexed = true;
-        await saveStore(ctx, store);
-        ctx.logger.info(`Auto-indexed ${added} issue documents`);
-      }
-    }
-
-    ctx.data.register("files", async (params) => {
-      const store = await loadStore(ctx);
-      let files = store.files;
-
-      // Filter by company prefix (e.g. "ALE", "PIC")
-      if (typeof params.companyPrefix === "string" && params.companyPrefix) {
-        const prefix = params.companyPrefix + "-";
-        files = files.filter(f =>
-          f.linked_issue_id?.startsWith(prefix) || !f.linked_issue_id
-        );
-      }
-      if (params.flagged === true || params.flagged === "true") {
-        files = files.filter(f => f.flagged_for_review && f.review_status === "pending");
-      }
-      if (typeof params.status === "string" && params.status) {
-        files = files.filter(f => f.review_status === params.status);
-      }
-      if (typeof params.linked_issue_id === "string" && params.linked_issue_id) {
-        files = files.filter(f => f.linked_issue_id === params.linked_issue_id);
-      }
-      if (typeof params.q === "string" && params.q) {
-        const q = params.q.toLowerCase();
-        files = files.filter(f =>
-          f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q) ||
-          (f.linked_issue_id ?? "").toLowerCase().includes(q)
-        );
-      }
-      const limit = config.maxFilesPerPage ?? 100;
-      return { files: files.slice(0, limit), total: files.length };
+    // ------------------------------------------------------------------
+    // Data: list documents (drives the main list view)
+    // ------------------------------------------------------------------
+    ctx.data.register("documents", async (params) => {
+      return indexDocuments(ctx, {
+        companyPrefix: typeof params.companyPrefix === "string" ? params.companyPrefix : undefined,
+        status: typeof params.status === "string" ? params.status : undefined,
+        q: typeof params.q === "string" ? params.q : undefined,
+        issueIdentifier: typeof params.issueIdentifier === "string" ? params.issueIdentifier : undefined,
+        agentId: typeof params.agentId === "string" ? params.agentId : undefined,
+        limit: config.maxFilesPerPage ?? 100,
+      });
     });
 
-    ctx.data.register("file", async (params) => {
-      if (!params.id) throw new Error("id required");
-      const store = await loadStore(ctx);
-      const file = store.files.find(f => f.id === params.id);
-      if (!file) throw new Error("File not found: " + params.id);
-      return file;
+    // ------------------------------------------------------------------
+    // Data: get single document with full content
+    // ------------------------------------------------------------------
+    ctx.data.register("document", async (params) => {
+      if (!params.issueId || !params.docKey || !params.companyId) {
+        throw new Error("issueId, docKey, and companyId required");
+      }
+
+      const issueId = String(params.issueId);
+      const docKey = String(params.docKey);
+      const companyId = String(params.companyId);
+
+      const [doc, issue] = await Promise.all([
+        ctx.issues.documents.get(issueId, docKey, companyId),
+        ctx.issues.get(issueId, companyId),
+      ]);
+
+      if (!doc) throw new Error(`Document not found: ${docKey} on issue ${issueId}`);
+
+      const reviewState = await getReviewState(ctx, issueId, docKey);
+      const prefixMatch = issue?.identifier?.match(/^([A-Z]+)-/);
+
+      return {
+        id: `${issue?.identifier ?? issueId}/${docKey}`,
+        name: doc.title || doc.key,
+        docKey: doc.key,
+        issueId,
+        issueIdentifier: issue?.identifier ?? issueId,
+        issueTitle: issue?.title ?? "",
+        issueStatus: issue?.status ?? "unknown",
+        issuePriority: issue?.priority ?? "medium",
+        assigneeAgentId: issue?.assigneeAgentId ?? null,
+        companyId,
+        companyPrefix: prefixMatch ? prefixMatch[1] : "",
+        projectId: issue?.projectId ?? null,
+        content: doc.body,
+        format: doc.format,
+        revisionNumber: doc.latestRevisionNumber,
+        createdByAgentId: doc.createdByAgentId,
+        updatedByAgentId: doc.updatedByAgentId,
+        reviewStatus: reviewState?.reviewStatus ?? "pending",
+        reviews: reviewState?.reviews ?? [],
+        createdAt: String(doc.createdAt),
+        updatedAt: String(doc.updatedAt),
+      } satisfies DocumentRecord;
     });
 
+    // ------------------------------------------------------------------
+    // Data: get issue context (for the sidebar panel)
+    // ------------------------------------------------------------------
+    ctx.data.register("issue-context", async (params) => {
+      if (!params.issueId || !params.companyId) {
+        throw new Error("issueId and companyId required");
+      }
+      const issue = await ctx.issues.get(String(params.issueId), String(params.companyId));
+      if (!issue) throw new Error("Issue not found");
+
+      // Also list all documents on this issue for context
+      let docSummaries: Awaited<ReturnType<typeof ctx.issues.documents.list>> = [];
+      try {
+        docSummaries = await ctx.issues.documents.list(issue.id, String(params.companyId));
+      } catch {
+        // leave empty
+      }
+
+      return {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description,
+        status: issue.status,
+        priority: issue.priority,
+        assigneeAgentId: issue.assigneeAgentId,
+        projectId: issue.projectId,
+        documents: docSummaries.map(d => ({
+          key: d.key,
+          title: d.title,
+          revisionNumber: d.latestRevisionNumber,
+          updatedAt: String(d.updatedAt),
+        })),
+        createdAt: String(issue.createdAt),
+        updatedAt: String(issue.updatedAt),
+      };
+    });
+
+    // ------------------------------------------------------------------
+    // Action: review a document (approve / request_changes / reject)
+    // ------------------------------------------------------------------
     ctx.actions.register("review", async (params) => {
-      if (!params.id || !params.action) throw new Error("id and action required");
-      const store = await loadStore(ctx);
-      const file = store.files.find(f => f.id === params.id);
-      if (!file) throw new Error("File not found: " + params.id);
-      const action = params.action as "approve" | "request_changes" | "reject";
-      const review: ReviewRecord = {
+      const issueId = String(params.issueId ?? "");
+      const docKey = String(params.docKey ?? "");
+      const companyId = String(params.companyId ?? "");
+      const action = String(params.action ?? "") as "approve" | "request_changes" | "reject";
+      const note = typeof params.note === "string" && params.note ? params.note : null;
+      const wakeAgent = params.wakeAgent === true;
+
+      if (!issueId || !docKey || !action) throw new Error("issueId, docKey, and action required");
+
+      // Map action to review status
+      const statusMap: Record<string, ReviewStatus> = {
+        approve: "approved",
+        request_changes: "changes_requested",
+        reject: "rejected",
+      };
+      const newStatus = statusMap[action];
+      if (!newStatus) throw new Error("Invalid action: " + action);
+
+      // Update plugin review state
+      const now = new Date().toISOString();
+      const existing = await getReviewState(ctx, issueId, docKey);
+      const review: ReviewEntry = {
         id: "rev_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
-        file_id: file.id, action,
-        note: typeof params.note === "string" && params.note ? params.note : null,
-        created_at: new Date().toISOString(),
+        action,
+        note,
+        reviewedAt: now,
       };
-      file.review_status = action === "approve" ? "approved" : action === "request_changes" ? "changes_requested" : "rejected";
-      file.updated_at = new Date().toISOString();
-      file.reviews = [...(file.reviews ?? []), review];
-      await saveStore(ctx, store);
-      return { file, review };
+      const updated: DocReviewState = {
+        reviewStatus: newStatus,
+        reviews: [...(existing?.reviews ?? []), review],
+        updatedAt: now,
+      };
+      await setReviewState(ctx, issueId, docKey, updated);
+
+      // Post comment on the issue
+      try {
+        const actionLabel = action === "approve" ? "approved" : action === "request_changes" ? "requested changes on" : "rejected";
+        let commentBody = `**Document Review**: ${actionLabel} document \`${docKey}\``;
+        if (note) commentBody += `\n\n> ${note}`;
+        await ctx.issues.createComment(issueId, commentBody, companyId);
+        ctx.logger.info(`Posted review comment on issue ${issueId} for document ${docKey}`);
+      } catch (err) {
+        ctx.logger.warn(`Failed to post comment on issue ${issueId}: ${String(err)}`);
+      }
+
+      // Wake agent if revisions requested and wakeAgent is true
+      if (wakeAgent && (action === "request_changes" || action === "reject")) {
+        try {
+          const issue = await ctx.issues.get(issueId, companyId);
+          if (issue?.assigneeAgentId) {
+            const prompt = action === "request_changes"
+              ? `Revisions requested on document "${docKey}" for issue ${issue.identifier}. Review note: ${note ?? "No specific notes provided."} Please revise the document.`
+              : `Document "${docKey}" for issue ${issue.identifier} was rejected. Review note: ${note ?? "No specific notes provided."} Please review and address the feedback.`;
+
+            await ctx.agents.invoke(issue.assigneeAgentId, companyId, {
+              prompt,
+              reason: `Document review: ${action} on ${docKey}`,
+            });
+            ctx.logger.info(`Woke agent ${issue.assigneeAgentId} for document revision on ${docKey}`);
+          }
+        } catch (err) {
+          ctx.logger.warn(`Failed to wake agent for issue ${issueId}: ${String(err)}`);
+        }
+      }
+
+      return { reviewStatus: newStatus, review };
     });
 
-    ctx.actions.register("register-file", async (params) => {
-      if (!params.name || !params.path) throw new Error("name and path required");
-      const store = await loadStore(ctx);
+    // ------------------------------------------------------------------
+    // Action: dismiss a document (remove from review queue)
+    // ------------------------------------------------------------------
+    ctx.actions.register("dismiss", async (params) => {
+      const issueId = String(params.issueId ?? "");
+      const docKey = String(params.docKey ?? "");
+      if (!issueId || !docKey) throw new Error("issueId and docKey required");
 
-      const existing = store.files.find(f => f.path === params.path && f.linked_issue_id === (params.linked_issue_id ?? null));
-      if (existing) return { file: existing, duplicate: true };
-
-      const flagged = params.flagged_for_review === true || params.flagged_for_review === "true"
-        || (config.defaultFlagForReview === true && params.flagged_for_review !== false && params.flagged_for_review !== "false");
-
-      const file: FileRecord = {
-        id: "file-" + Date.now(), name: String(params.name), path: String(params.path),
-        file_type: params.file_type === "image" ? "image" : "text",
-        content: typeof params.content === "string" ? params.content : null,
-        linked_issue_id: typeof params.linked_issue_id === "string" ? params.linked_issue_id : null,
-        linked_task_id: typeof params.linked_task_id === "string" ? params.linked_task_id : null,
-        review_status: "pending",
-        flagged_for_review: flagged,
-        creating_agent_id: typeof params.creating_agent_id === "string" ? params.creating_agent_id : null,
-        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), reviews: [],
+      const now = new Date().toISOString();
+      const existing = await getReviewState(ctx, issueId, docKey);
+      const review: ReviewEntry = {
+        id: "rev_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+        action: "dismiss",
+        note: typeof params.note === "string" ? params.note : null,
+        reviewedAt: now,
       };
-      store.files.unshift(file);
-      await saveStore(ctx, store);
-      return { file, duplicate: false };
+      const updated: DocReviewState = {
+        reviewStatus: "dismissed",
+        reviews: [...(existing?.reviews ?? []), review],
+        updatedAt: now,
+      };
+      await setReviewState(ctx, issueId, docKey, updated);
+      return { reviewStatus: "dismissed" };
     });
 
-    ctx.actions.register("sync-documents", async () => {
-      const store = await loadStore(ctx);
-      const added = await indexAllDocuments(ctx, store);
-      if (added > 0) await saveStore(ctx, store);
-      return { added, total: store.files.length };
+    // ------------------------------------------------------------------
+    // Action: reset a document back to pending (undo dismiss/review)
+    // ------------------------------------------------------------------
+    ctx.actions.register("reset-review", async (params) => {
+      const issueId = String(params.issueId ?? "");
+      const docKey = String(params.docKey ?? "");
+      if (!issueId || !docKey) throw new Error("issueId and docKey required");
+
+      const now = new Date().toISOString();
+      const existing = await getReviewState(ctx, issueId, docKey);
+      const updated: DocReviewState = {
+        reviewStatus: "pending",
+        reviews: existing?.reviews ?? [],
+        updatedAt: now,
+      };
+      await setReviewState(ctx, issueId, docKey, updated);
+      return { reviewStatus: "pending" };
     });
   },
+
   async onHealth() {
-    return { status: "ok", message: "File Viewer plugin running" };
+    return { status: "ok", message: "File Viewer v0.4.0 — native document review" };
   },
 });
 

@@ -3,18 +3,27 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.plugin-file-viewer",
   apiVersion: 1,
-  version: "0.3.1",
-  displayName: "File Viewer",
+  version: "0.4.0",
+  displayName: "Document Review",
   description:
-    "Browse and review files linked to Paperclip issues. Manage a review queue, approve or reject files, and keep a full review history — all from within Paperclip.",
+    "Review agent-produced documents linked to Paperclip issues. Approve, request changes, reject, or dismiss — with comments posted back to the issue and optional agent wake-up for revisions.",
   author: "Paperclip AI Agents",
   categories: ["ui", "workspace"],
   capabilities: [
+    // Read
     "plugin.state.read",
     "plugin.state.write",
     "companies.read",
     "issues.read",
+    "issue.comments.read",
     "issue.documents.read",
+    "agents.read",
+    // Write
+    "issues.update",
+    "issue.comments.create",
+    "issue.documents.write",
+    "agents.invoke",
+    // UI
     "ui.page.register",
     "ui.sidebar.register",
   ],
@@ -25,31 +34,17 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: "object",
     properties: {
-      seedExampleFiles: {
-        type: "boolean",
-        title: "Seed Example Files",
-        description:
-          "Create 3 example files (deploy.sh, config.yml, README.md) on first load. Useful for testing. Disable for clean installs.",
-        default: true,
-      },
-      defaultFlagForReview: {
-        type: "boolean",
-        title: "Flag New Files for Review",
-        description:
-          "When enabled, newly registered files are automatically added to the Review Queue.",
-        default: false,
-      },
       autoIndexDocuments: {
         type: "boolean",
         title: "Auto-Index Issue Documents",
         description:
-          "Automatically discover and register all issue documents on plugin startup. New documents are added each time the plugin restarts.",
+          "Automatically discover all issue documents when listing. Disable for manual registration only.",
         default: true,
       },
       maxFilesPerPage: {
         type: "number",
-        title: "Files Per Page",
-        description: "Maximum number of files shown in the sidebar list.",
+        title: "Documents Per Page",
+        description: "Maximum number of documents shown in the sidebar list.",
         default: 100,
       },
     },
@@ -59,7 +54,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "page",
         id: "file-viewer-page",
-        displayName: "File Viewer",
+        displayName: "Document Review",
         routePath: "file-viewer",
         exportName: "FileViewerPage",
       },
